@@ -1,0 +1,81 @@
+---
+language: shell
+sudo: true
+install:
+  - git config --global url."https://${GHE_REPO_TOKEN}:x-oauth-basic@github.comcast.com".insteadOf "https://github.comcast.com"
+  - git fetch --tags
+  - export VERSION=$(git describe --always --tags)
+  - echo "UPSTREAM_VERSION=${VERSION}" >> ${WORKSPACE}/.jenkins-properties
+  - cd /usr/local/
+  - sudo curl -O https://storage.googleapis.com/golang/go1.7.5.linux-amd64.tar.gz
+  - sudo tar xzf go1.7.5.linux-amd64.tar.gz
+  - export PATH=$PATH:/usr/local/go/bin
+  - mkdir -p /srv/jenkins/go/src/github.com/influxdata/telegraf
+  - cp -r ${WORKSPACE}/* /srv/jenkins/go/src/github.com/influxdata/telegraf/
+  - cd /srv/jenkins/go/src/github.com/influxdata/telegraf
+  - export GOPATH=/srv/jenkins/go
+  - export PATH=$PATH:$GOPATH/bin
+  - go get github.com/sparrc/gdm
+  - go get github.com/cloudfoundry-community/go-cfclient/...
+  - gdm restore
+
+script:
+  - go vet .
+  - go test -short -parallel 1 -p 1 $(go list ./... | egrep -v 'github.com/influxdata/telegraf/internal|inputs/tail')
+  - echo "UPSTREAM_MORTAR_BRANCH=${MORTAR_BRANCH}" >> ${WORKSPACE}/.jenkins-properties
+
+branches:
+  only:
+   - nano-precision
+
+jenkins:
+  secrets_id: sed-jenkins-encrypt
+  secrets:
+  - key: "GHE_REPO_TOKEN"
+    secret: "Jx9cdFMtjw0ep/UORmaLy/U7OBDA0FFFRXw1BEeM40ZAcKaRY+r7L01/sDLl1u/FXFvB3RiM2ky1nBR3RqvV9tLwiXkp3hFWutBqV4EuNF6E7DGVSBty0ER5ZHDdRTAO6uIgC+C3d2Ve0EqnNjOwiEnXszTlsrPSf4yCn7d5CF2run9a162An9xJhgYyV5Sbp+nmxUELJNsR8ZpbXfX4ZKiB5JCf+H+6Hesu9AW2VJcUIwp86hHjiR6h0b3qPV3XqmMtDkLWFnVgSzIX46l8iXY9iaz/APg0xoQW5GjJJigDes8qhkN3wl4XFdjK241HRemHTEZ/oBcqqf1ZwjvLRXdllGslPcZgzxP3UqS74WiSfVRt2zWbC2/Iy2cjqFF4zJxxUeNR4npcv1TTnj2Kadwlre099kcHrx6D3eXdBy0qHsLd9vOuYq5Rs0NlGFE3PqAeGaJu+O83SkFF6Jh+E+kar9KuSl4W5sd3np4iQe5bhmU7b6Ie/e/wLSgmlthg"
+  - key: "SEDSERVICE_PWD"
+    secret: "upvWPhbbtQVOPttWhdrpIVfXqeYNdmeLChTMxwYe2uZxOQj+OfA80TxsZlV9iUpPCSoP1dip08pr/ReIWZku65cyHvfpa/st0KgpU/LWMRodYYu67lOGMoCkJhHa5jubR4wXU2lVrVl0y6xqqN139LuJAXGbx6/PXMuYZvMBCVwi04+BwRjnDTBQZgzj7pe2AaHHZUOZIkcPEpSUGlFiEkRbnh40MQzNgfKrer+DtdewWs0jMtmqAXIWeMmLm+KJFn5UP8Q/WHbE6Cq+i35BCTAQEefA1BOJRG7saLd4MAP12QC+ydkaTfbqBu3dgneuPz5bxb3NeZGNK5PY2wxbINV4P4MTKHL1lfOtySM+v099c2W5vwIw9I2r1iiKodrZSRZetSG/QU7WBk2hSssB6CCz0kXHD02K2ia0eKLoY8IXZfEH3SMU6M7r5XJfk9acYnRarmzwtXYsOLYS00Ny9hZB+dCJSHUk6JV9iSZtvsVbik0XIDUJUKipBKUwv+WM"
+  collect:
+    artifacts: "**/*"
+
+pipeline:
+  auto_trigger: true
+  script:
+    - stage: Release
+      default_labels:
+        - openstack_ashburn
+        - packer
+        - terraform
+      steps:
+        - node:
+          - copyartifacts: '**/*'
+          - shell:
+            - echo "Releasing ${UPSTREAM_VERSION}-${UPSTREAM_MORTAR_BRANCH}"
+            - export PIPELINE_WORKSPACE=${PWD}
+            # Go 1.7.5
+            - cd /usr/local/
+            - sudo curl -O https://storage.googleapis.com/golang/go1.7.5.linux-amd64.tar.gz
+            - sudo tar xzf go1.7.5.linux-amd64.tar.gz
+            - export PATH=$PATH:/usr/local/go/bin
+            # SVN
+            - sudo yum install -y subversion
+            # Setup
+            - mkdir /srv/jenkins/go
+            - export GOPATH=/srv/jenkins/go
+            - export PATH=$PATH:$GOPATH/bin
+            - go get github.com/mitchellh/gox
+            - go get github.com/sparrc/gdm
+            - cd $PIPELINE_WORKSPACE
+            - mkdir -p /srv/jenkins/go/src/github.com/influxdata/telegraf
+            - cp -r ${PIPELINE_WORKSPACE}/* /srv/jenkins/go/src/github.com/influxdata/telegraf/
+            - cd /srv/jenkins/go/src/github.com/influxdata/telegraf
+            - go get github.com/cloudfoundry-community/go-cfclient/...
+            - gdm restore
+            # Build Binaries
+            - gox -ldflags "-X main.version=${UPSTREAM_MORTAR_BRANCH}-${UPSTREAM_VERSION}" -os "linux darwin" -arch "amd64" -output "pkg/${UPSTREAM_MORTAR_BRANCH}-{{.OS}}-{{.Arch}}/telegraf" ./...
+            # Do the Atlas Release
+            - svn co --username sedservice --password ${SEDSERVICE_PWD} --non-interactive --trust-server-cert https://atlas.sys.comcast.net/cim/cim/vendor-local/influxdata/telegraf/comcast ${PIPELINE_WORKSPACE}/atlas
+            - for pkg in $(ls pkg/); do cd pkg/$pkg; tar cvzf "${PIPELINE_WORKSPACE}/atlas/telegraf-${pkg}-${UPSTREAM_VERSION}.tar.gz" telegraf*; cd ../..; done;
+            - cd ${PIPELINE_WORKSPACE}/atlas
+            - svn status | grep '?' | sed 's/^.* /svn add /' | bash
+            - svn ci --username sedservice --password ${SEDSERVICE_PWD} --non-interactive --trust-server-cert -m "Adding ${UPSTREAM_MORTAR_BRANCH} telegraf, version ${UPSTREAM_VERSION}"
